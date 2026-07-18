@@ -47,17 +47,22 @@ async function query(text, params) {
 }
 
 /**
- * Run the migration file on startup.
- * Idempotent: uses IF NOT EXISTS / ON CONFLICT DO NOTHING.
+ * Run all migration files on startup (in filename order).
+ * Idempotent: uses IF NOT EXISTS / ON CONFLICT DO NOTHING throughout.
  */
 async function migrate() {
-  const sql = fs.readFileSync(
-    path.join(__dirname, '..', 'migrations', '001_create_clients.sql'),
-    'utf8',
-  );
-  await query(sql);
-  console.log('[db] migration applied');
+  const migrationsDir = path.join(__dirname, '..', 'migrations');
+  const files = fs.readdirSync(migrationsDir)
+    .filter((f) => f.endsWith('.sql'))
+    .sort();                              // 001_ before 002_
+
+  for (const file of files) {
+    const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    await query(sql);
+    console.log(`[db] applied migration: ${file}`);
+  }
 }
+
 
 /**
  * Graceful shutdown.

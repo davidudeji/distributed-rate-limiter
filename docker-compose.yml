@@ -1,6 +1,64 @@
 services:
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
-    command: ["redis-server", "--appendonly", "no"]
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Postgres ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB:       ratelimiter
+      POSTGRES_USER:     rl_user
+      POSTGRES_PASSWORD: rl_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rl_user -d ratelimiter"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── App (two instances to demonstrate distribution) ───────────────────────
+  app1:
+    build: .
+    environment:
+      REDIS_URL:    redis://redis:6379
+      DATABASE_URL: postgres://rl_user:rl_pass@postgres:5432/ratelimiter
+      PORT:         3000
+      LOG_LEVEL:    info
+    ports:
+      - "3000:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  app2:
+    build: .
+    environment:
+      REDIS_URL:    redis://redis:6379
+      DATABASE_URL: postgres://rl_user:rl_pass@postgres:5432/ratelimiter
+      PORT:         3001
+      LOG_LEVEL:    info
+    ports:
+      - "3001:3001"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pg_data:
