@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rate Limiter · Dashboard</title>
+  <meta name="description" content="Real-time monitoring dashboard for the distributed token-bucket rate limiter" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    /* ── Design System ─────────────────────────────────────────── */
+    :root {
+      --bg:           #04040f;
+      --bg-2:         #080820;
+      --surface:      rgba(255,255,255,0.035);
+      --surface-h:    rgba(255,255,255,0.06);
+      --border:       rgba(255,255,255,0.075);
+      --border-h:     rgba(255,255,255,0.14);
+      --text:         #ddddf2;
+      --text-2:       #8888aa;
+      --text-3:       #484868;
+      --cyan:         #00d4ff;
+      --cyan-glow:    rgba(0,212,255,0.18);
+      --cyan-soft:    rgba(0,212,255,0.08);
+      --green:        #00e676;
+      --green-glow:   rgba(0,230,118,0.18);
+      --green-soft:   rgba(0,230,118,0.08);
+      --red:          #ff4757;
+      --red-glow:     rgba(255,71,87,0.18);
+      --red-soft:     rgba(255,71,87,0.08);
+      --orange:       #ffa502;
+      --orange-glow:  rgba(255,165,2,0.18);
+      --orange-soft:  rgba(255,165,2,0.08);
+      --purple:       #7c4dff;
+      --purple-glow:  rgba(124,77,255,0.18);
+      --r:            14px;
+      --r-sm:         8px;
+    }
+
+    /* ── Reset & Base ──────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-size: 15px; -webkit-font-smoothing: antialiased; scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      background-image:
+        radial-gradient(ellipse 90% 60% at 10% -10%, rgba(0,212,255,0.07) 0%, transparent 55%),
+        radial-gradient(ellipse 70% 50% at 90% 110%, rgba(124,77,255,0.07) 0%, transparent 55%),
+        radial-gradient(ellipse 50% 40% at 50% 50%, rgba(0,230,118,0.02) 0%, transparent 70%);
+      background-attachment: fixed;
+    }
+
+    /* ── Layout ────────────────────────────────────────────────── */
+    .wrap { max-width: 1500px; margin: 0 auto; padding: 0 28px 64px; }
+
+    /* ── Header ─────────────────────────────────────────────────── */
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 22px 0 26px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 28px;
+      gap: 16px; flex-wrap: wrap;
+    }
+    .logo { display: flex; align-items: center; gap: 14px; }
+    .logo-mark {
+      width: 42px; height: 42px;
+      background: linear-gradient(135deg, #00d4ff 0%, #7c4dff 100%);
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; flex-shrink: 0;
+      box-shadow: 0 0 24px rgba(0,212,255,0.25);
+    }
+    .logo-text { line-height: 1.25; }
+    .logo-title { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
+    .logo-sub   { font-size: 0.68rem; font-weight: 500; color: var(--text-3); letter-spacing: 0.1em; text-transform: uppercase; margin-top: 2px; }
+
+    .hdr-right { display: flex; align-items: center; gap: 16px; }
+
+    /* Health pill */
+    .health-pill {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 16px;
+      border-radius: 100px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      font-size: 0.78rem; font-weight: 500; color: var(--text-2);
+      transition: border-color 0.4s;
+    }
+    .h-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-3); transition: background 0.4s;
+    }
+    .h-dot.healthy { background: var(--green); animation: pulse-g 2.2s ease infinite; }
+    .h-dot.degraded { background: var(--orange); animation: pulse-o 1.6s ease infinite; }
+    .h-dot.error    { background: var(--red); }
+
+    .clock {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.82rem; color: var(--text-3);
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Controls ───────────────────────────────────────────────── */
+    .controls {
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      margin-bottom: 26px;
+    }
+    .ctrl-group { display: flex; align-items: center; gap: 10px; }
+    .ctrl-lbl { font-size: 0.7rem; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.1em; white-space: nowrap; }
+
+    .sel-wrap { position: relative; }
+    select {
+      appearance: none;
+      background: var(--surface);
+      border: 1px solid var(--border-h);
+      border-radius: var(--r-sm);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.88rem;
+      padding: 9px 38px 9px 14px;
+      cursor: pointer;
+      min-width: 230px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    select:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px var(--cyan-soft); }
+    .sel-arr { position: absolute; right: 13px; top: 50%; transform: translateY(-50%); color: var(--text-3); pointer-events: none; font-size: 0.7rem; }
+
+    .range-group { display: flex; gap: 4px; }
+    .btn-r {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      color: var(--text-2);
+      font-family: inherit; font-size: 0.78rem; font-weight: 500;
+      padding: 8px 18px; cursor: pointer;
+      transition: all 0.18s;
+    }
+    .btn-r:hover { border-color: var(--cyan); color: var(--cyan); }
+    .btn-r.on { background: var(--cyan-soft); border-color: var(--cyan); color: var(--cyan); }
+
+    .btn-ref {
+      display: flex; align-items: center; gap: 7px;
+      background: var(--surface); border: 1px solid var(--border-h);
+      border-radius: var(--r-sm);
+      color: var(--text-2); font-family: inherit; font-size: 0.82rem;
+      padding: 9px 18px; cursor: pointer; margin-left: auto;
+      transition: all 0.2s;
+    }
+    .btn-ref:hover { color: var(--cyan); border-color: var(--cyan); box-shadow: 0 0 12px var(--cyan-soft); }
+    .btn-ref svg { transition: transform 0.6s; }
+    .btn-ref.spin svg { animation: rot 0.7s linear infinite; }
+
+    /* ── Metric Cards ───────────────────────────────────────────── */
+    .m-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 12px;
+      margin-bottom: 22px;
+    }
+    @media (max-width:1260px){ .m-grid { grid-template-columns: repeat(3,1fr); } }
+    @media (max-width:680px) { .m-grid { grid-template-columns: repeat(2,1fr); } }
+
+    .mc {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 20px 20px 18px;
+      position: relative; overflow: hidden;
+      transition: border-color 0.25s, transform 0.2s, box-shadow 0.25s;
+    }
+    .mc::after {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      background: var(--accent, var(--cyan));
+      transform: scaleX(0); transform-origin: left;
+      transition: transform 0.35s ease;
+    }
+    .mc:hover { border-color: var(--border-h); transform: translateY(-2px); box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+    .mc:hover::after { transform: scaleX(1); }
+    .mc-lbl { font-size: 0.68rem; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.11em; margin-bottom: 13px; }
+    .mc-val {
+      font-size: 2rem; font-weight: 800; letter-spacing: -0.04em;
+      line-height: 1; font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+    .mc-val.g { color: var(--green); }
+    .mc-val.r { color: var(--red); }
+    .mc-val.c { color: var(--cyan); }
+    .mc-val.o { color: var(--orange); }
+    .mc-sub { font-size: 0.7rem; color: var(--text-3); margin-top: 7px; line-height: 1.5; }
+
+    /* ── Main 2-col ─────────────────────────────────────────────── */
+    .main-grid { display: grid; grid-template-columns: 1fr 340px; gap: 14px; margin-bottom: 14px; }
+    @media (max-width:1050px){ .main-grid { grid-template-columns:1fr; } }
+
+    /* ── Card base ──────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 24px;
+      position: relative;
+    }
+    .c-title {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.7rem; font-weight: 700;
+      color: var(--text-3); text-transform: uppercase; letter-spacing: 0.12em;
+      margin-bottom: 20px;
+    }
+    .c-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); flex-shrink: 0; }
+
+    /* ── Chart card ─────────────────────────────────────────────── */
+    .chart-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--r); padding: 24px; position: relative; overflow: hidden;
+    }
+    .chart-hdr { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 22px; gap: 12px; flex-wrap: wrap; }
+    .chart-hdr-l { display: flex; flex-direction: column; gap: 4px; }
+    .chart-title { font-size: 0.7rem; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.12em; }
+    .chart-client { font-size: 1rem; font-weight: 600; color: var(--text); font-family: 'JetBrains Mono', monospace; }
+    .chart-src { font-size: 0.66rem; color: var(--text-3); font-style: italic; }
+    .legend { display: flex; gap: 18px; align-items: center; }
+    .leg { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-2); }
+    .leg-d { width: 24px; height: 3px; border-radius: 2px; }
+    .chart-wrap { position: relative; height: 290px; }
+    canvas#tc { display: block; }
+
+    /* ── Sidebar ────────────────────────────────────────────────── */
+    .sidebar { display: flex; flex-direction: column; gap: 12px; }
+
+    /* CB card */
+    .cb-box {
+      display: flex; align-items: center; gap: 12px;
+      padding: 14px 16px; border-radius: var(--r-sm);
+      margin-bottom: 16px; transition: all 0.35s;
+    }
+    .cb-box.CLOSED   { background: var(--green-soft); border: 1px solid rgba(0,230,118,0.2); }
+    .cb-box.OPEN     { background: var(--red-soft);   border: 1px solid rgba(255,71,87,0.2); }
+    .cb-box.HALF_OPEN { background: var(--orange-soft); border: 1px solid rgba(255,165,2,0.2); }
+    .cb-led { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
+    .CLOSED   .cb-led { background: var(--green);  box-shadow: 0 0 10px var(--green); }
+    .OPEN     .cb-led { background: var(--red);    box-shadow: 0 0 10px var(--red); }
+    .HALF_OPEN .cb-led { background: var(--orange); box-shadow: 0 0 10px var(--orange); }
+    .cb-nm { font-weight: 700; font-size: 0.95rem; }
+    .CLOSED   .cb-nm { color: var(--green); }
+    .OPEN     .cb-nm { color: var(--red); }
+    .HALF_OPEN .cb-nm { color: var(--orange); }
+    .cb-hint { font-size: 0.7rem; color: var(--text-3); margin-top: 2px; }
+
+    .cb-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .cb-s-lbl { font-size: 0.67rem; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-3); }
+    .cb-s-val { font-size: 1.05rem; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; margin-top: 3px; }
+
+    /* Queue bar */
+    .q-row { display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--text-3); margin: 16px 0 6px; }
+    .prog { height: 5px; background: rgba(255,255,255,0.06); border-radius: 3px; overflow: hidden; }
+    .prog-f { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--cyan), var(--purple)); transition: width 0.6s ease; }
+
+    /* Config rows */
+    .cfg-r {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 0; border-bottom: 1px solid var(--border);
+    }
+    .cfg-r:last-child { border-bottom: none; }
+    .cfg-k { font-size: 0.75rem; color: var(--text-3); }
+    .cfg-v { font-size: 0.85rem; font-weight: 500; color: var(--text); font-family: 'JetBrains Mono', monospace; }
+    .mode-tag {
+      padding: 3px 11px; border-radius: 100px;
+      font-size: 0.67rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .mode-open   { background: var(--green-soft); color: var(--green); }
+    .mode-closed { background: var(--red-soft);   color: var(--red); }
+
+    /* ── Summary row ────────────────────────────────────────────── */
+    .sum-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
+    @media (max-width:900px){ .sum-grid { grid-template-columns: repeat(2,1fr); } }
+
+    /* ── States ─────────────────────────────────────────────────── */
+    .overlay {
+      position: absolute; inset: 0;
+      display: none; align-items: center; justify-content: center; flex-direction: column; gap: 12px;
+      background: rgba(4,4,15,0.72); backdrop-filter: blur(6px);
+      border-radius: var(--r); z-index: 20;
+    }
+    .overlay.show { display: flex; }
+    .spin-c { width: 28px; height: 28px; border: 2px solid var(--border); border-top-color: var(--cyan); border-radius: 50%; animation: rot 0.75s linear infinite; }
+    .ov-txt { font-size: 0.78rem; color: var(--text-3); }
+
+    .empty {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 12px; padding: 52px 24px; text-align: center;
+    }
+    .empty-ico { font-size: 2.2rem; opacity: 0.25; }
+    .empty-txt { font-size: 0.82rem; color: var(--text-3); max-width: 240px; line-height: 1.6; }
+
+    .err-bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px;
+      background: var(--red-soft); border: 1px solid rgba(255,71,87,0.22);
+      border-radius: var(--r-sm); font-size: 0.78rem; color: var(--red);
+      margin-bottom: 14px; display: none;
+    }
+    .err-bar a { color: var(--red); margin-left: 4px; text-decoration: underline; cursor: pointer; }
+
+    /* Dividers */
+    .divider { height: 1px; background: var(--border); margin: 24px 0; }
+    .s-label { font-size: 0.7rem; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 14px; }
+
+    /* ── Animations ─────────────────────────────────────────────── */
+    @keyframes rot { to { transform: rotate(360deg); } }
+    @keyframes pulse-g {
+      0%,100% { box-shadow: 0 0 0 0 rgba(0,230,118,0.5); }
+      50%      { box-shadow: 0 0 0 6px rgba(0,230,118,0); }
+    }
+    @keyframes pulse-o {
+      0%,100% { box-shadow: 0 0 0 0 rgba(255,165,2,0.5); }
+      50%      { box-shadow: 0 0 0 6px rgba(255,165,2,0); }
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .fade-up { animation: fadeUp 0.35s ease both; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ── Header ─────────────────────────────────────────────────── -->
+  <header>
+    <div class="logo">
+      <div class="logo-mark">⚡</div>
+      <div class="logo-text">
+        <div class="logo-title">Rate Limiter</div>
+        <div class="logo-sub">Monitoring Dashboard</div>
+      </div>
+    </div>
+    <div class="hdr-right">
+      <div class="health-pill">
+        <div class="h-dot" id="hDot"></div>
+        <span id="hTxt">Connecting…</span>
+      </div>
+      <div class="clock" id="clock">--:--:--</div>
+    </div>
+  </header>
+
+  <!-- ── Controls ───────────────────────────────────────────────── -->
+  <div class="controls">
+    <div class="ctrl-group">
+      <span class="ctrl-lbl">Client</span>
+      <div class="sel-wrap">
+        <select id="cSel">
+          <option value="">— Select a client —</option>
+        </select>
+        <span class="sel-arr">▾</span>
+      </div>
+    </div>
+    <div class="ctrl-group">
+      <span class="ctrl-lbl">Range</span>
+      <div class="range-group">
+        <button class="btn-r" data-r="10">10 days</button>
+        <button class="btn-r" data-r="15">15 days</button>
+        <button class="btn-r on" data-r="30">30 days</button>
+      </div>
+    </div>
+    <button class="btn-ref" id="refBtn">
+      <svg id="refIco" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1 4v6h6"/><path d="M23 20v-6h-6"/>
+        <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"/>
+      </svg>
+      Refresh
+    </button>
+  </div>
+
+  <!-- ── System Metric Cards ────────────────────────────────────── -->
+  <div class="m-grid">
+    <div class="mc" style="--accent:var(--cyan)">
+      <div class="mc-lbl">Total Requests</div>
+      <div class="mc-val c" id="mTot">—</div>
+      <div class="mc-sub" id="mUp">—</div>
+    </div>
+    <div class="mc" style="--accent:var(--green)">
+      <div class="mc-lbl">Allowed</div>
+      <div class="mc-val g" id="mAlw">—</div>
+    </div>
+    <div class="mc" style="--accent:var(--red)">
+      <div class="mc-lbl">Blocked</div>
+      <div class="mc-val r" id="mBlk">—</div>
+    </div>
+    <div class="mc" style="--accent:var(--purple)">
+      <div class="mc-lbl">Allow Rate</div>
+      <div class="mc-val" id="mArt">—</div>
+      <div class="mc-sub">of all requests</div>
+    </div>
+    <div class="mc" style="--accent:var(--orange)">
+      <div class="mc-lbl">Cache Hit Ratio</div>
+      <div class="mc-val o" id="mChr">—</div>
+      <div class="mc-sub" id="mChS">—</div>
+    </div>
+    <div class="mc" style="--accent:var(--cyan)">
+      <div class="mc-lbl">Req / sec</div>
+      <div class="mc-val c" id="mRps">—</div>
+      <div class="mc-sub">average since start</div>
+    </div>
+  </div>
+
+  <!-- ── Main 2-col ─────────────────────────────────────────────── -->
+  <div class="main-grid">
+
+    <!-- Chart panel -->
+    <div class="chart-card" id="chartCard">
+      <div class="chart-hdr">
+        <div class="chart-hdr-l">
+          <div class="chart-title">Requests Over Time</div>
+          <div class="chart-client" id="chartClient">No client selected</div>
+          <div class="chart-src" id="chartSrc"></div>
+        </div>
+        <div class="legend">
+          <div class="leg"><div class="leg-d" style="background:var(--green)"></div>Allowed</div>
+          <div class="leg"><div class="leg-d" style="background:var(--red)"></div>Blocked</div>
+        </div>
+      </div>
+
+      <!-- Error -->
+      <div class="err-bar" id="chartErr">
+        ⚠ Could not load trend data.
+        <a id="retryT">Retry</a>
+      </div>
+
+      <!-- Chart canvas / empty state -->
+      <div class="chart-wrap">
+        <canvas id="tc"></canvas>
+        <div class="empty" id="chartEmpty">
+          <div class="empty-ico">📈</div>
+          <div class="empty-txt">Select a client and a time range to view the request trend chart</div>
+        </div>
+      </div>
+
+      <!-- Loading overlay -->
+      <div class="overlay" id="chartLoad">
+        <div class="spin-c"></div>
+        <div class="ov-txt">Loading trend data…</div>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+
+      <!-- Circuit Breaker -->
+      <div class="card">
+        <div class="c-title"><span class="c-dot"></span>Circuit Breaker</div>
+        <div class="cb-box CLOSED" id="cbBox">
+          <div class="cb-led"></div>
+          <div>
+            <div class="cb-nm" id="cbNm">—</div>
+            <div class="cb-hint" id="cbHint">—</div>
+          </div>
+        </div>
+        <div class="cb-stats">
+          <div><div class="cb-s-lbl">Failures</div><div class="cb-s-val" id="cbFail">—</div></div>
+          <div><div class="cb-s-lbl">Status</div><div class="cb-s-val" id="cbStat">—</div></div>
+          <div><div class="cb-s-lbl">Uptime</div><div class="cb-s-val" id="cbUp">—</div></div>
+          <div><div class="cb-s-lbl">Queue Depth</div><div class="cb-s-val" id="cbQ">—</div></div>
+        </div>
+        <div class="q-row"><span>Analytics Queue</span><span id="qPct">0 jobs</span></div>
+        <div class="prog"><div class="prog-f" id="qBar" style="width:0%"></div></div>
+      </div>
+
+      <!-- Client Config -->
+      <div class="card" style="position:relative">
+        <div class="c-title"><span class="c-dot" style="background:var(--purple)"></span>Client Config</div>
+        <div id="cfgBody">
+          <div class="empty" style="padding:28px 0">
+            <div class="empty-ico" style="font-size:1.6rem">🔑</div>
+            <div class="empty-txt">Select a client to view its rate-limit configuration</div>
+          </div>
+        </div>
+        <div class="overlay" id="cfgLoad"><div class="spin-c"></div></div>
+      </div>
+
+    </div><!-- /sidebar -->
+  </div><!-- /main-grid -->
+
+  <!-- ── Client Window Summary ──────────────────────────────────── -->
+  <div id="sumSec" style="display:none">
+    <div class="divider"></div>
+    <div class="s-label" id="sumLbl">Client Summary</div>
+    <div class="sum-grid">
+      <div class="mc" style="--accent:var(--cyan)">
+        <div class="mc-lbl">Window Total</div>
+        <div class="mc-val c" id="sT">—</div>
+      </div>
+      <div class="mc" style="--accent:var(--green)">
+        <div class="mc-lbl">Allowed</div>
+        <div class="mc-val g" id="sA">—</div>
+        <div class="mc-sub" id="sArt">—</div>
+      </div>
+      <div class="mc" style="--accent:var(--red)">
+        <div class="mc-lbl">Blocked</div>
+        <div class="mc-val r" id="sB">—</div>
+      </div>
+      <div class="mc" style="--accent:var(--purple)">
+        <div class="mc-lbl">Last Seen</div>
+        <div class="mc-val" id="sLs" style="font-size:0.95rem">—</div>
+        <div class="mc-sub" id="sFs">—</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /wrap -->
+
+<script>
+/* ═══════════════════════════════════════════════════════
+   State
+══════════════════════════════════════════════════════ */
+const S = { clientId: null, range: 30 };
+let chart = null;
+
+/* ═══════════════════════════════════════════════════════
+   Clock
+══════════════════════════════════════════════════════ */
+const clockEl = document.getElementById('clock');
+function tick() { clockEl.textContent = new Date().toLocaleTimeString('en-GB'); }
+tick(); setInterval(tick, 1000);
+
+/* ═══════════════════════════════════════════════════════
+   Helpers
+══════════════════════════════════════════════════════ */
+const $ = id => document.getElementById(id);
+
+async function get(url) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error(`HTTP ${r.status} — ${url}`);
+  return r.json();
+}
+
+function fmt(n)  { return (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString(); }
+function pct(n)  { return n == null ? '—' : (n * 100).toFixed(1) + '%'; }
+function rps(n)  { return n == null ? '—' : Number(n).toFixed(1); }
+
+function fmtUp(sec) {
+  if (sec == null) return '—';
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.floor(sec % 60);
+  return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
+}
+
+function fmtDt(str) {
+  if (!str) return '—';
+  return new Date(str).toLocaleDateString('en-GB', {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+  });
+}
+
+/* Smooth animated counter */
+function counter(el, to, float = false) {
+  if (!el) return;
+  const from = parseFloat(el.dataset.v ?? 0) || 0;
+  el.dataset.v = to;
+  const dur = 420, t0 = Date.now();
+  const tick = () => {
+    const p = Math.min((Date.now() - t0) / dur, 1);
+    const ease = 1 - Math.pow(1 - p, 3);
+    const v = from + (to - from) * ease;
+    el.textContent = float ? v.toFixed(1) + '%' : fmt(Math.round(v));
+    if (p < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+/* ═══════════════════════════════════════════════════════
+   Load clients → dropdown
+══════════════════════════════════════════════════════ */
+async function loadClients() {
+  try {
+    const d = await get('/dashboard/clients');
+    const sel = $('cSel');
+    sel.innerHTML = '<option value="">— Select a client —</option>';
+    (d.clients || []).forEach(c => {
+      const o = document.createElement('option');
+      o.value = c.api_key;
+      o.textContent = `${c.api_key}  ·  ${c.mode}  ·  ${fmt(c.capacity)} cap`;
+      sel.appendChild(o);
+    });
+    if (d.clients?.length === 0) {
+      const o = document.createElement('option'); o.disabled = true;
+      o.textContent = 'No clients registered yet'; sel.appendChild(o);
+    }
+  } catch (e) { console.warn('clients:', e.message); }
+}
+
+/* ═══════════════════════════════════════════════════════
+   Metrics  (system-wide)
+══════════════════════════════════════════════════════ */
+async function fetchMetrics() {
+  try {
+    const d = await get('/metrics');
+    counter($('mTot'), d.requests.total);
+    counter($('mAlw'), d.requests.allowed);
+    counter($('mBlk'), d.requests.blocked);
+    $('mArt').textContent = pct(d.requests.allowRate);
+    $('mChr').textContent = pct(d.cache.hitRatio);
+    $('mChS').textContent = `${fmt(d.cache.hits)} hits / ${fmt(d.cache.misses)} misses`;
+    $('mRps').textContent = rps(d.requests.requestsPerSec);
+    $('mUp').textContent  = 'Up ' + fmtUp(d.uptime);
+  } catch (e) { console.warn('metrics:', e.message); }
+}
+
+/* ═══════════════════════════════════════════════════════
+   Health + Circuit Breaker
+══════════════════════════════════════════════════════ */
+async function fetchHealth() {
+  try {
+    const d = await get('/health');
+    const ok = d.status === 'healthy';
+    $('hDot').className = 'h-dot ' + (ok ? 'healthy' : 'degraded');
+    $('hTxt').textContent = ok ? 'Healthy' : 'Degraded';
+
+    const cb = d.circuitBreaker || {};
+    const st = cb.state || 'CLOSED';
+    $('cbBox').className = 'cb-box ' + st;
+    $('cbNm').textContent   = st;
+    $('cbHint').textContent = cb.openedAt ? 'Opened ' + fmtDt(cb.openedAt) : 'All systems normal';
+    $('cbFail').textContent = cb.failureCount ?? '0';
+    $('cbStat').textContent = d.status ?? '—';
+    $('cbUp').textContent   = fmtUp(d.uptime);
+
+    const depth = d.analytics?.queueDepth ?? 0;
+    $('cbQ').textContent = fmt(depth);
+    const pctV = Math.min(depth / 500, 1) * 100;
+    $('qBar').style.width = pctV + '%';
+    $('qPct').textContent = depth + ' jobs';
+  } catch (e) {
+    $('hDot').className  = 'h-dot error';
+    $('hTxt').textContent = 'Unreachable';
+    console.warn('health:', e.message);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   Trend chart
+══════════════════════════════════════════════════════ */
+function showLoad(id, on) { $(id).classList.toggle('show', on); }
+
+async function fetchTrends() {
+  if (!S.clientId) return;
+  showLoad('chartLoad', true);
+  $('chartErr').style.display = 'none';
+  $('chartEmpty').style.display = 'none';
+  $('tc').style.display = 'block';
+
+  try {
+    const d = await get(`/dashboard/trends?clientId=${encodeURIComponent(S.clientId)}&range=${S.range}`);
+    $('chartSrc').textContent = d.source ? `source: ${d.source}` : '';
+    drawChart(d.buckets || []);
+  } catch (e) {
+    $('chartErr').style.display  = 'flex';
+    $('tc').style.display = 'none';
+    console.warn('trends:', e.message);
+  } finally {
+    showLoad('chartLoad', false);
+  }
+}
+
+function drawChart(buckets) {
+  if (buckets.length === 0) {
+    $('chartEmpty').style.display = 'flex';
+    $('tc').style.display = 'none';
+    if (chart) { chart.destroy(); chart = null; }
+    return;
+  }
+
+  const labels  = buckets.map(b => {
+    const dt = new Date(b.bucket);
+    if (S.range <= 2)
+      return dt.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
+    return dt.toLocaleDateString('en-GB', {month:'short', day:'numeric', hour:'2-digit'});
+  });
+  const allowed = buckets.map(b => Number(b.allowed_requests));
+  const blocked = buckets.map(b => Number(b.denied_requests));
+
+  const ctx = $('tc').getContext('2d');
+  const gA  = ctx.createLinearGradient(0, 0, 0, 290);
+  gA.addColorStop(0, 'rgba(0,230,118,0.28)');
+  gA.addColorStop(1, 'rgba(0,230,118,0.00)');
+  const gB  = ctx.createLinearGradient(0, 0, 0, 290);
+  gB.addColorStop(0, 'rgba(255,71,87,0.22)');
+  gB.addColorStop(1, 'rgba(255,71,87,0.00)');
+
+  const data = {
+    labels,
+    datasets: [
+      { label: 'Allowed', data: allowed, borderColor: '#00e676', backgroundColor: gA, borderWidth: 2, pointRadius: labels.length > 60 ? 0 : 3, pointHoverRadius: 6, pointBackgroundColor: '#00e676', tension: 0.4, fill: true },
+      { label: 'Blocked', data: blocked, borderColor: '#ff4757', backgroundColor: gB, borderWidth: 2, pointRadius: labels.length > 60 ? 0 : 3, pointHoverRadius: 6, pointBackgroundColor: '#ff4757', tension: 0.4, fill: true },
+    ],
+  };
+
+  const cfg = {
+    type: 'line', data,
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      animation: { duration: 500 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(8,8,32,0.96)',
+          borderColor: 'rgba(255,255,255,0.09)', borderWidth: 1,
+          titleColor: '#6868aa', bodyColor: '#ddddf2',
+          padding: 14, cornerRadius: 10,
+          callbacks: {
+            title: items => items[0].label,
+            label: ctx => `  ${ctx.dataset.label}: ${Number(ctx.parsed.y).toLocaleString()}`
+          }
+        },
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(255,255,255,0.035)', drawBorder: false },
+          ticks: { color: '#484868', font: { size: 11, family: 'JetBrains Mono' }, maxTicksLimit: 10, maxRotation: 0 }
+        },
+        y: {
+          grid: { color: 'rgba(255,255,255,0.035)', drawBorder: false },
+          ticks: { color: '#484868', font: { size: 11 }, callback: v => v >= 1000 ? (v/1000).toFixed(1)+'k' : v },
+          beginAtZero: true,
+        }
+      }
+    }
+  };
+
+  if (chart) { chart.data = data; chart.update('active'); }
+  else        { chart = new Chart(ctx, cfg); }
+}
+
+/* ═══════════════════════════════════════════════════════
+   Summary
+══════════════════════════════════════════════════════ */
+async function fetchSummary() {
+  if (!S.clientId) return;
+  try {
+    const d = await get(`/dashboard/summary?clientId=${encodeURIComponent(S.clientId)}&range=${S.range}`);
+    $('sumSec').style.display = 'block';
+    $('sumSec').classList.add('fade-up');
+    $('sumLbl').textContent = `${S.clientId}  ·  Last ${S.range} days`;
+    counter($('sT'), d.totalRequests);
+    counter($('sA'), d.allowedRequests);
+    counter($('sB'), d.deniedRequests);
+    $('sArt').textContent = d.allowRate != null ? pct(d.allowRate) + ' allow rate' : '—';
+    $('sLs').textContent  = fmtDt(d.lastSeen);
+    $('sFs').textContent  = 'First: ' + fmtDt(d.firstSeen);
+  } catch (e) { console.warn('summary:', e.message); }
+}
+
+/* ═══════════════════════════════════════════════════════
+   Client config
+══════════════════════════════════════════════════════ */
+async function fetchConfig() {
+  if (!S.clientId) return;
+  showLoad('cfgLoad', true);
+  try {
+    const d = await get(`/dashboard/client/${encodeURIComponent(S.clientId)}`);
+    const c = d.client;
+    $('cfgBody').innerHTML = `
+      <div class="cfg-r"><span class="cfg-k">API Key</span><span class="cfg-v" style="font-size:0.72rem;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.api_key}</span></div>
+      <div class="cfg-r"><span class="cfg-k">Capacity</span><span class="cfg-v">${fmt(c.capacity)} tok</span></div>
+      <div class="cfg-r"><span class="cfg-k">Refill Rate</span><span class="cfg-v">${parseFloat(c.refill_rate).toFixed(2)}/s</span></div>
+      <div class="cfg-r"><span class="cfg-k">Fail Mode</span><span class="mode-tag mode-${c.mode}">${c.mode}</span></div>
+      <div class="cfg-r"><span class="cfg-k">Created</span><span class="cfg-v" style="font-size:0.7rem">${fmtDt(c.created_at)}</span></div>
+    `;
+  } catch (e) {
+    $('cfgBody').innerHTML = `<div class="empty" style="padding:20px 0"><div class="empty-txt" style="color:var(--red)">Failed to load config</div></div>`;
+    console.warn('config:', e.message);
+  } finally {
+    showLoad('cfgLoad', false);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   Client selection
+══════════════════════════════════════════════════════ */
+function selectClient(id) {
+  S.clientId = id || null;
+  $('chartClient').textContent = id || 'No client selected';
+
+  if (!id) {
+    $('sumSec').style.display = 'none';
+    $('chartEmpty').style.display = 'flex';
+    $('chartEmpty').querySelector('.empty-txt').textContent = 'Select a client to view the request trend chart';
+    $('chartErr').style.display = 'none';
+    $('tc').style.display = 'none';
+    $('cfgBody').innerHTML = `<div class="empty" style="padding:28px 0"><div class="empty-ico" style="font-size:1.6rem">🔑</div><div class="empty-txt">Select a client to view its rate-limit configuration</div></div>`;
+    if (chart) { chart.destroy(); chart = null; }
+    return;
+  }
+
+  Promise.allSettled([fetchTrends(), fetchSummary(), fetchConfig()]);
+}
+
+/* ═══════════════════════════════════════════════════════
+   Polling  (system metrics every 5s)
+══════════════════════════════════════════════════════ */
+function poll() {
+  fetchMetrics();
+  fetchHealth();
+  setInterval(fetchMetrics, 5000);
+  setInterval(fetchHealth,  5000);
+}
+
+/* ═══════════════════════════════════════════════════════
+   Events
+══════════════════════════════════════════════════════ */
+$('cSel').addEventListener('change', e => selectClient(e.target.value));
+
+document.querySelectorAll('.btn-r').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.btn-r').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    S.range = parseInt(b.dataset.r);
+    if (S.clientId) { fetchTrends(); fetchSummary(); }
+  });
+});
+
+$('refBtn').addEventListener('click', async () => {
+  $('refBtn').classList.add('spin');
+  await Promise.allSettled([
+    fetchMetrics(), fetchHealth(),
+    S.clientId ? fetchTrends()   : null,
+    S.clientId ? fetchSummary()  : null,
+    S.clientId ? fetchConfig()   : null,
+  ]);
+  setTimeout(() => $('refBtn').classList.remove('spin'), 700);
+});
+
+$('retryT').addEventListener('click', e => { e.preventDefault(); fetchTrends(); });
+
+/* ═══════════════════════════════════════════════════════
+   Boot
+══════════════════════════════════════════════════════ */
+(async () => {
+  await loadClients();
+  poll();
+})();
+</script>
+</body>
+</html>

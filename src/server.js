@@ -3,8 +3,14 @@
 /**
  * Fastify application entry point.
  *
- * Routes (Tier 1 + 2 + 3):
+ * Routes (Tier 1 + 2 + 3 + Dashboard):
  *   GET  /check                        – rate-limit probe (any authenticated client)
+ *   GET  /dashboard                    – monitoring dashboard HTML (Phase A)
+ *   GET  /dashboard/clients            – client list for dropdown (no auth)
+ *   GET  /dashboard/summary            – per-client window summary (Phase B)
+ *   GET  /dashboard/trends             – per-client trend buckets (Phase B)
+ *   GET  /dashboard/client/:apiKey     – single client config (Phase B)
+ *   GET  /dashboard/top-clients        – top N clients by volume (Phase B)
  *   GET  /health                       – circuit-breaker + Redis status + queue depth
  *   GET  /ready                        – readiness (Postgres + Redis both up)
  *   GET  /live                         – liveness (process alive)
@@ -13,11 +19,12 @@
  *   GET  /analytics/summary/:apiKey    – per-client summary stats (Phase 9)
  *   POST /admin/clients                – create client (Tier 3)
  *   GET  /admin/clients                – list clients (Tier 3)
- *   GET  /admin/clients/:apiKey        – get client (Tier 3)
- *   PUT  /admin/clients/:apiKey        – update client config (Tier 3, replaces old PUT /clients/:key)
+ *   PUT  /admin/clients/:apiKey        – update client config (Tier 3)
  *   DEL  /admin/clients/:apiKey        – soft-delete client (Tier 3)
  */
 
+const path    = require('node:path');
+const fs      = require('node:fs');
 const Fastify = require('fastify');
 const Redis   = require('ioredis');
 const db      = require('./db');
@@ -25,7 +32,7 @@ const { startWorker, stopWorker } = require('./worker');
 const { getQueue }                = require('./queue');
 const { rateLimitPlugin }         = require('./middleware/rateLimitMiddleware');
 const { adminPlugin }             = require('./adminRoutes');
-const { getTrends, getSummary }   = require('./dashboard');
+const { getTrends, getSummary, getTopClients } = require('./dashboard');
 
 // ---------------------------------------------------------------------------
 // In-process metrics counters (Phase 10)
@@ -153,6 +160,135 @@ function buildApp(opts = {}) {
     // via the global; here we just track the total)
     metrics.totalRequests++;
     return { ok: true, ts: Date.now() };
+  });
+
+  // ── Dashboard (Phase A–C) ─────────────────────────────────────────────
+
+  // Phase C: Serve the dashboard HTML from /dashboard
+  // Using fs.readFileSync avoids @fastify/static as a hard dependency —
+  // the dashboard is one self-contained file so static asset serving isn’t needed.
+  const DASHBOARD_HTML_PATH = path.join(__dirname, '../public/index.html');
+
+  app.get('/dashboard', { config: { skipRateLimit: true } }, async (request, reply) => {
+    try {
+      const html = fs.readFileSync(DASHBOARD_HTML_PATH, 'utf8');
+      return reply.type('text/html; charset=utf-8').send(html);
+    } catch {
+      return reply.code(503).send('Dashboard not yet available — public/index.html missing.');
+    }
+  });
+
+  // Phase A: Public client list — populates the dashboard dropdown (no admin auth).
+  // Returns only the fields the UI needs; not a security risk as API keys are
+  // not secrets in the same sense as passwords (they’re sent in every request header).
+  app.get('/dashboard/clients', { config: { skipRateLimit: true } }, async (request, reply) => {
+    try {
+      const { rows } = await db.query(
+        `SELECT api_key, mode, capacity, refill_rate
+         FROM clients
+         WHERE deleted_at IS NULL
+         ORDER BY api_key ASC`,
+      );
+      return { clients: rows };
+    } catch (err) {
+      request.log.error(err);
+      return reply.code(500).send({ error: 'Failed to load clients' });
+    }
+  });
+
+  // Phase B: Per-client window summary — drives the summary stats row.
+  app.get('/dashboard/summary', { config: { skipRateLimit: true },
+    schema: {
+      description: 'Per-client request summary over a given window',
+      tags: ['analytics'],
+      querystring: {
+        type: 'object',
+        required: ['clientId'],
+        properties: {
+          clientId: { type: 'string' },
+          range:    { type: 'integer', minimum: 1, maximum: 31, default: 30 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const { clientId, range = 30 } = request.query;
+    if (!clientId) return reply.code(400).send({ error: 'clientId is required' });
+    try {
+      return await getSummary(clientId, parseInt(range));
+    } catch (err) {
+      request.log.error(err);
+      return reply.code(500).send({ error: 'Failed to fetch summary' });
+    }
+  });
+
+  // Phase B: Per-client trend buckets — drives the Chart.js line chart.
+  // Reads from TimescaleDB continuous aggregates (never from raw analytics events).
+  app.get('/dashboard/trends', { config: { skipRateLimit: true },
+    schema: {
+      description: 'Per-client request trends (backed by TimescaleDB continuous aggregates)',
+      tags: ['analytics'],
+      querystring: {
+        type: 'object',
+        required: ['clientId'],
+        properties: {
+          clientId:    { type: 'string' },
+          range:       { type: 'integer', minimum: 1, maximum: 31, default: 30 },
+          granularity: { type: 'string', enum: ['minute', 'hour'], default: 'hour' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const { clientId, range = 30, granularity = 'hour' } = request.query;
+    if (!clientId) return reply.code(400).send({ error: 'clientId is required' });
+    try {
+      return await getTrends(clientId, { days: parseInt(range), granularity });
+    } catch (err) {
+      request.log.error(err);
+      return reply.code(500).send({ error: 'Failed to fetch trends' });
+    }
+  });
+
+  // Phase B: Single client config — drives the "Client Config" sidebar card.
+  app.get('/dashboard/client/:apiKey', { config: { skipRateLimit: true },
+    schema: { description: 'Single client rate-limit config', tags: ['analytics'] },
+  }, async (request, reply) => {
+    const { apiKey } = request.params;
+    try {
+      const { rows } = await db.query(
+        `SELECT id, api_key, capacity, refill_rate, mode, created_at, updated_at
+         FROM clients
+         WHERE api_key = $1 AND deleted_at IS NULL`,
+        [apiKey],
+      );
+      if (rows.length === 0) return reply.code(404).send({ error: 'Client not found' });
+      return { client: rows[0] };
+    } catch (err) {
+      request.log.error(err);
+      return reply.code(500).send({ error: 'Failed to fetch client' });
+    }
+  });
+
+  // Phase B: Top clients by request volume — for future leaderboard extension.
+  app.get('/dashboard/top-clients', { config: { skipRateLimit: true },
+    schema: {
+      description: 'Top N clients by request volume',
+      tags: ['analytics'],
+      querystring: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', minimum: 1, maximum: 50, default: 10 },
+          range: { type: 'integer', minimum: 1, maximum: 31, default: 30 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const { limit = 10, range = 30 } = request.query;
+    try {
+      return await getTopClients(parseInt(limit), parseInt(range));
+    } catch (err) {
+      request.log.error(err);
+      return reply.code(500).send({ error: 'Failed to fetch top clients' });
+    }
   });
 
   // ── Health / Observability (Phase 10) ────────────────────────────────────

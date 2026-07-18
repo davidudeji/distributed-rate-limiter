@@ -205,4 +205,43 @@ async function getSummary(apiKey, days = 1) {
   };
 }
 
-module.exports = { getTrends, getSummary, isTimescaleAvailable };
+/**
+ * Top clients by request volume over a given window.
+ * Used by GET /dashboard/top-clients.
+ *
+ * @param {number} [limit=10]
+ * @param {number} [days=30]
+ */
+async function getTopClients(limit = 10, days = 30) {
+  const safeDays  = Math.min(parseInt(days,  10), MAX_DAYS);
+  const safeLimit = Math.min(parseInt(limit, 10), 50);
+
+  const { rows } = await db.query(
+    `SELECT
+       api_key,
+       COUNT(*)                              AS total_requests,
+       COUNT(*) FILTER (WHERE allowed)       AS allowed_requests,
+       COUNT(*) FILTER (WHERE NOT allowed)   AS denied_requests
+     FROM analytics
+     WHERE occurred_at >= NOW() - ($1 || ' days')::INTERVAL
+     GROUP BY api_key
+     ORDER BY total_requests DESC
+     LIMIT $2`,
+    [String(safeDays), safeLimit],
+  );
+
+  return {
+    windowDays: safeDays,
+    clients: rows.map((r) => ({
+      apiKey:          r.api_key,
+      totalRequests:   Number(r.total_requests),
+      allowedRequests: Number(r.allowed_requests),
+      deniedRequests:  Number(r.denied_requests),
+      allowRate:       Number(r.total_requests) > 0
+        ? +(Number(r.allowed_requests) / Number(r.total_requests)).toFixed(4)
+        : null,
+    })),
+  };
+}
+
+module.exports = { getTrends, getSummary, getTopClients, isTimescaleAvailable };
