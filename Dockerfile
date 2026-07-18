@@ -7,8 +7,10 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 # Copy source
-COPY src/       ./src/
+COPY src/        ./src/
 COPY migrations/ ./migrations/
+COPY public/     ./public/
+
 
 EXPOSE 3000
 

@@ -37,6 +37,7 @@ services:
       DATABASE_URL: postgres://rl_user:rl_pass@postgres:5432/ratelimiter
       PORT:         3000
       LOG_LEVEL:    info
+      ADMIN_KEY:    change-me-in-production
     ports:
       - "3000:3000"
     depends_on:
@@ -52,6 +53,7 @@ services:
       DATABASE_URL: postgres://rl_user:rl_pass@postgres:5432/ratelimiter
       PORT:         3001
       LOG_LEVEL:    info
+      ADMIN_KEY:    change-me-in-production
     ports:
       - "3001:3001"
     depends_on:

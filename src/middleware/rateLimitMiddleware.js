@@ -70,13 +70,28 @@ async function rateLimitPlugin(fastify, opts) {
     }
 
     // ── 1. Resolve client config (cache-aside, never touches Postgres on cache hit)
+    //    We do a single HGETALL to determine hit/miss for metrics AND get the config.
+    //    This is the same call cache.get() would make internally, so we skip the wrapper
+    //    when the cache is warm, and fall back to cache.get() only on a miss to get
+    //    Postgres + re-population in one place.
     let config;
     try {
       const cacheKey  = `cfg:${apiKey}`;
       const cached    = await redis.hgetall(cacheKey);
       const isCacheHit = cached && cached.capacity;
-      if (isCacheHit) { incMetric('cacheHits'); } else { incMetric('cacheMisses'); }
-      config = await cache.get(apiKey);
+      if (isCacheHit) {
+        incMetric('cacheHits');
+        config = {
+          id:         parseInt(cached.id, 10),
+          apiKey:     cached.apiKey,
+          capacity:   parseInt(cached.capacity, 10),
+          refillRate: parseFloat(cached.refillRate),
+          mode:       cached.mode,
+        };
+      } else {
+        incMetric('cacheMisses');
+        config = await cache.get(apiKey); // Postgres fetch + Redis repopulate
+      }
     } catch (err) {
       request.log.error({ err }, 'config-cache error');
       // If we cannot look up the client at all, fail safely

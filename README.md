@@ -41,13 +41,18 @@ node src/server.js
 
 ### Environment variables
 
-| Variable       | Default                         | Description                    |
-|----------------|---------------------------------|--------------------------------|
-| `REDIS_URL`    | `redis://127.0.0.1:6379`        | Redis connection string        |
-| `DATABASE_URL` | —                               | Postgres connection string     |
-| `PORT`         | `3000`                          | HTTP listen port               |
-| `HOST`         | `0.0.0.0`                       | HTTP listen host               |
-| `LOG_LEVEL`    | `info`                          | Pino log level                 |
+| Variable          | Default                      | Description                              |
+|-------------------|------------------------------|------------------------------------------|
+| `REDIS_URL`       | `redis://127.0.0.1:6379`     | Redis connection string                  |
+| `DATABASE_URL`    | —                            | Postgres connection string               |
+| `PORT`            | `3000`                       | HTTP listen port                         |
+| `HOST`            | `0.0.0.0`                    | HTTP listen host                         |
+| `LOG_LEVEL`       | `info`                       | Pino log level                           |
+| `ADMIN_KEY`       | `admin-secret`               | Value required in `x-admin-key` header   |
+| `ALLOWED_ORIGINS` | _(unset = CORS disabled)_    | Comma-separated list of allowed origins  |
+| `NODE_ENV`        | _(unset)_                    | Set to `production` to enable HSTS       |
+
+Copy `.env.example` → `.env` and fill in values before local development.
 
 ---
 
@@ -128,9 +133,33 @@ curl -X DELETE http://localhost:3000/admin/clients/test-key-open \
 ### Swagger UI (Tier 3 — if @fastify/swagger is installed)
 
 ```
-GET /docs   → Interactive Swagger UI
+GET /docs      → Interactive Swagger UI
 GET /docs/json → Raw OpenAPI 3.1 JSON schema
 ```
+
+### Dashboard (Phase A–C)
+
+The real-time monitoring dashboard is served directly from the API server — no separate container, no build step.
+
+```
+GET http://localhost:3000/dashboard
+```
+
+Open that URL in your browser after `docker compose up --build`.
+
+**Why zero-build (Option A)?**
+The backend is Fastify + Node — there is no existing React/Vite toolchain to inherit. A build step would add minutes to `docker compose up --build` and introduce npm-registry risk in restricted environments. The dashboard is one self-contained `public/index.html` with Chart.js loaded from a CDN, served via `fs.readFileSync` in the Fastify handler. Zero dependencies, zero build risk, works on day one.
+
+**What it shows:**
+- Six live metric cards (total requests, allowed, blocked, allow rate, cache hit ratio, req/s) — polls `/metrics` every 5 seconds
+- Animated Chart.js line chart — allowed vs. blocked requests over a 10/15/30-day window, backed by TimescaleDB continuous aggregates
+- Circuit breaker state (CLOSED / OPEN / HALF_OPEN) with a pulsing LED
+- Analytics queue depth with a progress bar
+- Per-client config sidebar (capacity, refill rate, fail mode, created date)
+- Window summary stats row (total, allowed, blocked, allow rate, first/last seen)
+- Loading, empty, and error states on every panel
+
+![Dashboard](docs/dashboard.png)
 
 ---
 
