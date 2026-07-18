@@ -53,9 +53,10 @@ node src/server.js
 
 ## API
 
-All routes except `/live`, `/ready`, and `/health` require an `x-api-key` header.
+All routes except `/live`, `/ready`, `/health`, `/metrics`, and `/analytics/*` require an `x-api-key` header.
+Admin routes require an `x-admin-key` header (set via `ADMIN_KEY` env var).
 
-### Rate-limited endpoint
+### Rate-limited endpoint (Tier 1)
 
 ```
 GET /check
@@ -74,28 +75,61 @@ x-api-key: <your-api-key>
 **Headers always returned:**
 
 ```
-X-RateLimit-Limit:     100       # bucket capacity
-X-RateLimit-Remaining: 42        # tokens left after this request
+X-RateLimit-Limit:     100        # bucket capacity
+X-RateLimit-Remaining: 42         # tokens left after this request
 X-RateLimit-Reset:     1720000000 # epoch-sec when bucket refills to full
-Retry-After:           3         # seconds to wait (only on 429)
+Retry-After:           3          # seconds to wait (only on 429)
 ```
 
-### Admin: update client config
+### Health + Metrics endpoints (Phase 10)
+
+```
+GET /live    → 200 always (liveness probe)
+GET /ready   → 200 if Redis + Postgres up, 503 if degraded (readiness probe)
+GET /health  → circuit breaker state, queue depth, uptime
+GET /metrics → request counters, cache hit ratio, req/s
+```
+
+### Analytics / Dashboard (Phase 9)
 
 ```bash
-curl -X PUT http://localhost:3000/clients/test-key-open \
+# 30-day hourly trend for a client
+GET /analytics/trends/test-key-open?days=30&granularity=hour
+
+# 24-hour summary
+GET /analytics/summary/test-key-open?days=1
+```
+
+### Admin CRUD (Tier 3)
+
+All admin routes require `x-admin-key` header.
+
+```bash
+# Create a new client
+curl -X POST http://localhost:3000/admin/clients \
+  -H "x-admin-key: admin-secret-change-me-in-production" \
   -H "Content-Type: application/json" \
-  -d '{"capacity": 200, "refillRate": 20}'
+  -d '{"capacity": 200, "refillRate": 20, "mode": "open"}'
+
+# List all clients
+curl -H "x-admin-key: admin-secret" http://localhost:3000/admin/clients
+
+# Update a client (immediately invalidates Redis cache)
+curl -X PUT http://localhost:3000/admin/clients/test-key-open \
+  -H "x-admin-key: admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"capacity": 500, "refillRate": 50}'
+
+# Soft-delete a client (evicts config cache + token bucket)
+curl -X DELETE http://localhost:3000/admin/clients/test-key-open \
+  -H "x-admin-key: admin-secret"
 ```
 
-This writes to Postgres and **immediately invalidates** the Redis cache so the change takes effect on the next request.
-
-### Health endpoints
+### Swagger UI (Tier 3 — if @fastify/swagger is installed)
 
 ```
-GET /live   → 200 always (liveness)
-GET /ready  → 200 if Redis + Postgres up, 503 if degraded (readiness)
-GET /health → circuit breaker state + stats
+GET /docs   → Interactive Swagger UI
+GET /docs/json → Raw OpenAPI 3.1 JSON schema
 ```
 
 ---
@@ -258,24 +292,35 @@ For a production deployment, Redis Sentinel (automatic failover, no sharding) or
 distributed-rate-limiter/
 ├── Dockerfile
 ├── README.md
+├── Tier1.md                         # Core correctness — explanation + trade-offs
+├── Tier2.md                         # Analytics pipeline — explanation + trade-offs
+├── Tier3.md                         # Stretch features — explanation + trade-offs
 ├── docker-compose.yml
 ├── package.json
+├── .env.example
 ├── migrations/
-│   └── 001_create_clients.sql   # clients table DDL + seed data
+│   ├── 001_create_clients.sql       # clients table DDL + seed data
+│   ├── 002_create_analytics.sql     # analytics table + indexes
+│   ├── 003_create_aggregates.sql    # TimescaleDB continuous aggregates
+│   └── 004_add_soft_delete.sql      # deleted_at column for admin CRUD
 ├── src/
-│   ├── rateLimiter.js           # Token bucket + atomic Lua script
-│   ├── configCache.js           # Cache-aside: Redis → Postgres fallback
-│   ├── circuitBreaker.js        # CLOSED → OPEN → HALF_OPEN state machine
-│   ├── db.js                    # Postgres pool + migrate()
-│   ├── server.js                # Fastify app factory + routes
+│   ├── rateLimiter.js               # Phase 1: Token bucket + atomic Lua script
+│   ├── configCache.js               # Phase 2: cache-aside (Redis → Postgres)
+│   ├── circuitBreaker.js            # Phase 3: CLOSED/OPEN/HALF_OPEN machine
+│   ├── db.js                        # Postgres pool + migrate()
+│   ├── server.js                    # Fastify app factory + all routes
+│   ├── queue.js                     # Phase 8: BullMQ Queue + enqueueEvent()
+│   ├── worker.js                    # Phase 8: BullMQ Worker + micro-batch flush
+│   ├── dashboard.js                 # Phase 9: trend queries (TimescaleDB + fallback)
+│   ├── adminRoutes.js               # Tier 3: Admin CRUD plugin
 │   └── middleware/
-│       └── rateLimitMiddleware.js  # Fastify plugin wiring all components
+│       └── rateLimitMiddleware.js   # Phase 4: onRequest hook + headers + metrics
 ├── docs/
-│   └── architecture.png         # System architecture diagram
+│   └── architecture.png             # Phase 6: system architecture diagram
 └── tests/
-    ├── rateLimiter.test.js      # Race condition + refill + config tests
-    ├── chaos.test.js            # Circuit breaker failure tests
-    └── load.js                  # autocannon load test script
+    ├── rateLimiter.test.js          # Phase 5: race + refill + clamp tests
+    ├── chaos.test.js                # Phase 5: circuit breaker failure tests
+    └── load.js                      # Phase 5: autocannon load test
 ```
 
 ---

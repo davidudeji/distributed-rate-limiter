@@ -29,6 +29,11 @@ const { CircuitBreaker }     = require('../circuitBreaker');
 const { ConfigCache }        = require('../configCache');
 const { enqueueEvent, closeQueue } = require('../queue');
 
+// Phase 10: metrics helper — gracefully handles the global not existing yet
+function incMetric(key) {
+  if (global.__rlMetrics) global.__rlMetrics[key]++;
+}
+
 
 /**
  * @param {import('fastify').FastifyInstance} fastify
@@ -67,6 +72,10 @@ async function rateLimitPlugin(fastify, opts) {
     // ── 1. Resolve client config (cache-aside, never touches Postgres on cache hit)
     let config;
     try {
+      const cacheKey  = `cfg:${apiKey}`;
+      const cached    = await redis.hgetall(cacheKey);
+      const isCacheHit = cached && cached.capacity;
+      if (isCacheHit) { incMetric('cacheHits'); } else { incMetric('cacheMisses'); }
       config = await cache.get(apiKey);
     } catch (err) {
       request.log.error({ err }, 'config-cache error');
@@ -117,6 +126,7 @@ async function rateLimitPlugin(fastify, opts) {
     // ── 5. Deny if not admitted
     const requestId = randomUUID();
     if (!result.allowed) {
+      incMetric('blockedRequests');
       const retryAfterSec = result.retryAfterMs > 0
         ? Math.ceil(result.retryAfterMs / 1000)
         : null;
@@ -143,6 +153,7 @@ async function rateLimitPlugin(fastify, opts) {
     }
 
     // ── 6. Admitted — log asynchronously and continue to route handler
+    incMetric('allowedRequests');
     enqueueEvent(opts.redis, {
       requestId,
       apiKey,
